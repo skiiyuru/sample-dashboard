@@ -1,13 +1,17 @@
-import bcrypt from 'bcrypt'
+// import bcrypt from 'bcrypt';
 import postgres from 'postgres'
 import { invoices, customers, revenue, users } from '../lib/placeholder-data'
 
 const sql = postgres(process.env.POSTGRES_URL!, { ssl: 'require' })
 
+async function setupDatabase() {
+  await sql`CREATE EXTENSION IF NOT EXISTS "uuid-ossp"`
+}
+
 async function seedUsers() {
   await sql`
     CREATE TABLE IF NOT EXISTS users (
-      id SERIAL PRIMARY KEY,
+      id UUID DEFAULT uuid_generate_v4() PRIMARY KEY,
       name VARCHAR(255) NOT NULL,
       email TEXT NOT NULL UNIQUE,
       password TEXT NOT NULL
@@ -16,11 +20,11 @@ async function seedUsers() {
 
   const insertedUsers = await Promise.all(
     users.map(async (user) => {
-      const hashedPassword = await bcrypt.hash(user.password, 10)
+      // const hashedPassword = await bcrypt.hash(user.password, 10);
       return sql`
-        INSERT INTO users (name, email, password)
-        VALUES (${user.name}, ${user.email}, ${hashedPassword})
-        ON CONFLICT (email) DO NOTHING;
+        INSERT INTO users (id, name, email, password)
+        VALUES (${user.id}, ${user.name}, ${user.email}, ${user.password})
+        ON CONFLICT (id) DO NOTHING;
       `
     })
   )
@@ -28,12 +32,36 @@ async function seedUsers() {
   return insertedUsers
 }
 
+async function seedInvoices() {
+  await sql`
+    CREATE TABLE IF NOT EXISTS invoices (
+      id UUID DEFAULT uuid_generate_v4() PRIMARY KEY,
+      customer_id UUID NOT NULL,
+      amount INT NOT NULL,
+      status VARCHAR(255) NOT NULL,
+      date DATE NOT NULL
+    );
+  `
+
+  const insertedInvoices = await Promise.all(
+    invoices.map(
+      (invoice) => sql`
+        INSERT INTO invoices (customer_id, amount, status, date)
+        VALUES (${invoice.customer_id}, ${invoice.amount}, ${invoice.status}, ${invoice.date})
+        ON CONFLICT (id) DO NOTHING;
+      `
+    )
+  )
+
+  return insertedInvoices
+}
+
 async function seedCustomers() {
   await sql`
     CREATE TABLE IF NOT EXISTS customers (
-      id SERIAL PRIMARY KEY,
+      id UUID DEFAULT uuid_generate_v4() PRIMARY KEY,
       name VARCHAR(255) NOT NULL,
-      email VARCHAR(255) NOT NULL UNIQUE,
+      email VARCHAR(255) NOT NULL,
       image_url VARCHAR(255) NOT NULL
     );
   `
@@ -41,50 +69,14 @@ async function seedCustomers() {
   const insertedCustomers = await Promise.all(
     customers.map(
       (customer) => sql`
-        INSERT INTO customers (name, email, image_url)
-        VALUES (${customer.name}, ${customer.email}, ${customer.image_url})
-        ON CONFLICT (email) DO NOTHING;
+        INSERT INTO customers (id, name, email, image_url)
+        VALUES (${customer.id}, ${customer.name}, ${customer.email}, ${customer.image_url})
+        ON CONFLICT (id) DO NOTHING;
       `
     )
   )
 
   return insertedCustomers
-}
-
-async function seedInvoices() {
-  await sql`
-    CREATE TABLE IF NOT EXISTS invoices (
-      id SERIAL PRIMARY KEY,
-      customer_id INT NOT NULL,
-      amount INT NOT NULL,
-      status VARCHAR(255) NOT NULL,
-      date DATE NOT NULL,
-      FOREIGN KEY (customer_id) REFERENCES customers(id) ON DELETE CASCADE
-    );
-  `
-
-  // Fetch customer IDs dynamically since we removed predefined IDs
-  const customersFromDB = await sql`SELECT id, email FROM customers;`
-
-  // Map customer emails to their new auto-incremented IDs
-  const customerMap = Object.fromEntries(
-    customersFromDB.map((c) => [c.email, c.id])
-  )
-
-  const insertedInvoices = await Promise.all(
-    invoices.map((invoice) => {
-      const customerId = customerMap[invoice.customer_id] // Map old ID to new one
-      if (!customerId) return Promise.resolve()
-
-      return sql`
-        INSERT INTO invoices (customer_id, amount, status, date)
-        VALUES (${customerId}, ${invoice.amount}, ${invoice.status}, ${invoice.date})
-        ON CONFLICT (id) DO NOTHING;
-      `
-    })
-  )
-
-  return insertedInvoices
 }
 
 async function seedRevenue() {
@@ -110,12 +102,12 @@ async function seedRevenue() {
 
 export async function GET() {
   try {
-    const result = await sql.begin((sql) => [
-      seedUsers(),
-      seedCustomers(),
-      seedInvoices(),
-      seedRevenue(),
-    ])
+    await setupDatabase()
+
+    await seedUsers()
+    await seedCustomers()
+    await seedInvoices()
+    await seedRevenue()
 
     return Response.json({ message: 'Database seeded successfully' })
   } catch (error) {
