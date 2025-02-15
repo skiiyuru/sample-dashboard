@@ -1,0 +1,107 @@
+'use server'
+
+import { z } from 'zod'
+import postgres from 'postgres'
+import { revalidatePath } from 'next/cache'
+import { redirect } from 'next/navigation'
+
+const sql = postgres(process.env.POSTGRES_URL!, { ssl: 'require' })
+
+const InvoiceSchema = z.object({
+  id: z.string(),
+  customerId: z.string({
+    invalid_type_error: 'Please select a customer',
+  }),
+  amount: z.coerce
+    .number()
+    .gt(0, { message: 'Please enter an amount greater than $0.' }),
+  status: z.enum(['pending', 'paid'], {
+    invalid_type_error: 'Please select an invoice status',
+  }),
+  date: z.string(),
+})
+
+const CreateInvoiceSchema = InvoiceSchema.omit({ id: true, date: true })
+const UpdateInvoiceSchema = InvoiceSchema.omit({ id: true, date: true })
+
+export type State = {
+  errors?: {
+    customerId?: string[]
+    amount?: string[]
+    status?: string[]
+  }
+  message: string | null
+}
+
+export async function createInvoice(prevState: State, formData: FormData) {
+  const validatedFields = CreateInvoiceSchema.safeParse({
+    customerId: formData.get('customerId'),
+    amount: formData.get('amount'),
+    status: formData.get('status'),
+  })
+  console.log('🚀 ~ createInvoice ~ validatedFields:', validatedFields)
+
+  if (!validatedFields.success) {
+    return {
+      errors: validatedFields.error.flatten().fieldErrors,
+      message: 'Missing Fields. Failed to Create Invoice',
+    }
+  }
+
+  const { customerId, amount, status } = validatedFields.data
+  const amount_in_cents = amount * 100
+  const date = new Date().toISOString().split('T')[0]
+
+  try {
+    await sql`
+      INSERT INTO invoices (customer_id, amount, status, date)
+      VALUES (${customerId}, ${amount_in_cents}, ${status}, ${date})
+    `
+  } catch (error) {
+    console.log(error)
+  }
+
+  const path = '/dashboard/invoices'
+  revalidatePath(path)
+  redirect(path)
+}
+
+export async function updateInvoice(id: string, formData: FormData) {
+  const { customerId, amount, status } = UpdateInvoiceSchema.parse({
+    customerId: formData.get('customerId'),
+    amount: formData.get('amount'),
+    status: formData.get('status'),
+  })
+
+  const amount_in_cents = amount * 100
+
+  try {
+    await sql`
+    UPDATE invoices
+    SET customer_id = ${customerId}, amount = ${amount_in_cents}, status = ${status}
+    WHERE id = ${id}
+  `
+  } catch (error) {
+    return {
+      message: 'Database Error, Failed to Create Invoice',
+    }
+  }
+
+  const path = '/dashboard/invoices'
+  revalidatePath(path)
+  redirect(path)
+}
+
+export async function deleteInvoice(id: string) {
+  try {
+    await sql`
+    DELETE FROM invoices where id = ${id}
+  `
+  } catch (error) {
+    console.log('🚀 ~ deleteInvoice ~ error:', error)
+    throw new Error('Something went wrong')
+  }
+
+  const path = '/dashboard/invoices'
+  revalidatePath(path)
+}
